@@ -7,7 +7,7 @@ from datetime import datetime
 import json
 
 # Configuration
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = "https://pr-reviewagent.onrender.com"
 
 # Page config
 st.set_page_config(
