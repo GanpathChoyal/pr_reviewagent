@@ -29,8 +29,8 @@ def get_llm():
         provider = settings.llm_provider.lower()
         if provider == "nvidia":
             api_key = settings.nvidia_api_key
-        elif provider == "gemini":
-            api_key = settings.gemini_api_key or settings.google_api_key
+        elif provider == "groq":
+            api_key = settings.GROQ_api_key 
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
         

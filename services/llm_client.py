@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class LLMProvider(str, Enum):
     """Supported LLM providers"""
     NVIDIA = "nvidia"
-    GEMINI = "gemini"
+    GROQ = "groq"
 
 
 class LLMClientError(Exception):
@@ -155,24 +155,28 @@ class NimLlmClient:
             self._http_client = None
 
 
-class GeminiLlmClient:
-    """Google Gemini API client with per-agent API key selection."""
+class GROQLlmClient:
+    """Groq (GroqCloud) API client with per-agent API key selection.
 
-    
+    Groq exposes an OpenAI-compatible /chat/completions endpoint, so the
+    request/response shape mirrors NimLlmClient. This is Groq
+    (api.groq.com, gsk_... keys, fast LPU inference of open models),
+    NOT xAI's Grok (api.x.ai) — different company, similar name.
+    """
+
     AGENT_MODELS = {
-    "logic_analyzer": "gemini-2.5-flash",
-    "readability_analyzer": "gemini-2.5-flash",
-    "performance_analyzer": "gemini-2.5-flash",
-    "security_analyzer": "gemini-2.5-flash",
-    "default": "gemini-2.5-flash",
-}
-    
+        "logic_analyzer": "llama-3.3-70b-versatile",
+        "readability_analyzer": "llama-3.3-70b-versatile",
+        "performance_analyzer": "llama-3.3-70b-versatile",
+        "security_analyzer": "llama-3.3-70b-versatile",  # bump to a stronger model here if needed
+        "default": "llama-3.3-70b-versatile",
+    }
 
     AGENT_KEY_SETTINGS = {
-        "logic_analyzer": "gemini_logic_api_key",
-        "readability_analyzer": "gemini_readability_api_key",
-        "performance_analyzer": "gemini_performance_api_key",
-        "security_analyzer": "gemini_security_api_key",
+        "logic_analyzer": "GROQ_logic_api_key",
+        "readability_analyzer": "GROQ_readability_api_key",
+        "performance_analyzer": "GROQ_performance_api_key",
+        "security_analyzer": "GROQ_security_api_key",
     }
 
     def __init__(
@@ -189,9 +193,9 @@ class GeminiLlmClient:
 
         if not self.api_key and not self._has_agent_api_keys():
             raise LLMClientError(
-                "Gemini API key is required. Set GEMINI_API_KEY or the per-agent "
-                "keys: GEMINI_LOGIC_API_KEY, GEMINI_READABILITY_API_KEY, "
-                "GEMINI_PERFORMANCE_API_KEY, GEMINI_SECURITY_API_KEY."
+                "Groq API key is required. Set GROQ_API_KEY or the per-agent "
+                "keys: GROQ_LOGIC_API_KEY, GROQ_READABILITY_API_KEY, "
+                "GROQ_PERFORMANCE_API_KEY, GROQ_SECURITY_API_KEY."
             )
 
         if model:
@@ -203,18 +207,18 @@ class GeminiLlmClient:
 
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.endpoint_base = "https://generativelanguage.googleapis.com/v1beta/models"
+        self.endpoint = "https://api.groq.com/openai/v1/chat/completions"
         self._http_client = None
 
         logger.info(
-            "GeminiLlmClient initialized with model: %s%s",
+            "GROQLlmClient initialized with model: %s%s",
             self.model,
             f" for {agent_name}" if agent_name else "",
         )
 
-    def for_agent(self, agent_name: str) -> "GeminiLlmClient":
-        """Create a Gemini client using this agent's configured API key."""
-        return GeminiLlmClient(
+    def for_agent(self, agent_name: str) -> "GROQLlmClient":
+        """Create a GROQ client using this agent's configured API key."""
+        return GROQLlmClient(
             api_key=self._api_key_for_agent(agent_name),
             model=self.AGENT_MODELS.get(agent_name, self.model),
             agent_name=agent_name,
@@ -229,7 +233,7 @@ class GeminiLlmClient:
             if agent_key:
                 return agent_key
 
-        return settings.gemini_api_key or settings.google_api_key
+        return getattr(settings, "GROQ_api_key", "")
 
     def _has_agent_api_keys(self) -> bool:
         return any(
@@ -240,66 +244,49 @@ class GeminiLlmClient:
     def _get_http_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=60.0)
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            self._http_client = httpx.AsyncClient(headers=headers, timeout=60.0)
         return self._http_client
 
-    def _messages_to_gemini(self, messages: List[BaseMessage]) -> tuple[Optional[str], List[Dict[str, Any]]]:
-        """Convert LangChain messages to Gemini generateContent format."""
-        system_parts = []
-        contents = []
-
+    def _messages_to_prompt(self, messages: List[BaseMessage]) -> List[Dict[str, str]]:
+        """Convert LangChain messages to OpenAI-style chat format."""
+        formatted_messages = []
         for msg in messages:
-            content = str(msg.content)
             if isinstance(msg, SystemMessage):
-                system_parts.append(content)
+                formatted_messages.append({"role": "system", "content": msg.content})
             elif isinstance(msg, HumanMessage):
-                contents.append({"role": "user", "parts": [{"text": content}]})
+                formatted_messages.append({"role": "user", "content": msg.content})
             else:
-                contents.append({"role": "user", "parts": [{"text": content}]})
-
-        system_instruction = "\n\n".join(system_parts) if system_parts else None
-        return system_instruction, contents
+                formatted_messages.append({"role": "user", "content": str(msg.content)})
+        return formatted_messages
 
     async def ainvoke(self, messages: List[BaseMessage], **kwargs) -> Any:
-        """Async invoke the Gemini API."""
+        """Async invoke the Groq API."""
         client = self._get_http_client()
-        system_instruction, contents = self._messages_to_gemini(messages)
+        formatted_messages = self._messages_to_prompt(messages)
 
         payload = {
-            "contents": contents,
-            "generationConfig": {
-                "temperature": kwargs.get("temperature", self.temperature),
-                "maxOutputTokens": kwargs.get("max_tokens", self.max_tokens),
-            },
+            "model": self.model,
+            "messages": formatted_messages,
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
         }
-
-        if system_instruction:
-            payload["systemInstruction"] = {
-                "parts": [{"text": system_instruction}]
-            }
-
-        endpoint = f"{self.endpoint_base}/{self.model}:generateContent"
 
         try:
             if not self.api_key:
                 raise LLMClientError(
-                    f"No Gemini API key configured for {self.agent_name or 'this client'}"
+                    f"No Groq API key configured for {self.agent_name or 'this client'}"
                 )
 
-            response = await client.post(
-                endpoint,
-                params={"key": self.api_key},
-                json=payload,
-            )
+            response = await client.post(self.endpoint, json=payload)
             response.raise_for_status()
 
             result = response.json()
-            parts = (
-                result.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [])
-            )
-            content = "".join(part.get("text", "") for part in parts)
+            message = result["choices"][0]["message"]
+            content = message.get("content", "") or ""
 
             class Response:
                 def __init__(self, content):
@@ -308,11 +295,11 @@ class GeminiLlmClient:
             return Response(content)
 
         except httpx.HTTPStatusError as e:
-            error_msg = f"Gemini API error: {e.response.status_code} - {e.response.text}"
+            error_msg = f"Groq API error: {e.response.status_code} - {e.response.text}"
             logger.error(error_msg)
             raise LLMClientError(error_msg)
         except Exception as e:
-            error_msg = f"Gemini request failed: {str(e)}"
+            error_msg = f"Groq request failed: {str(e)}"
             logger.error(error_msg)
             raise LLMClientError(error_msg)
 
@@ -362,8 +349,8 @@ class LLMClient:
         """Create LLM client based on provider"""
         if self.provider == LLMProvider.NVIDIA:
             return self._create_nvidia_client()
-        elif self.provider == LLMProvider.GEMINI:
-            return self._create_gemini_client()
+        elif self.provider == LLMProvider.GROQ:
+            return self._create_GROQ_client()
         else:
             raise LLMClientError(f"Unsupported provider: {self.provider}")
     
@@ -378,7 +365,7 @@ class LLMClient:
         
         # Default model and parameters
         # Use model from settings if available, otherwise use default
-        default_model = settings.llm_model if settings.llm_provider == "nvidia" else None
+        default_model = settings.llm_model if settings.llm_provider.lower() == "nvidia" else None
         model = self.model or default_model
         
         default_params = {
@@ -399,9 +386,9 @@ class LLMClient:
             **params
         )
 
-    def _create_gemini_client(self) -> GeminiLlmClient:
-        """Create Google Gemini client."""
-        default_model = settings.llm_model if settings.llm_provider == "gemini" else None
+    def _create_GROQ_client(self) -> GROQLlmClient:
+        """Create Groq client."""
+        default_model = settings.llm_model if settings.llm_provider.lower() == "groq" else None
         model = self.model or default_model
 
         default_params = {
@@ -411,7 +398,7 @@ class LLMClient:
         params = {**default_params, **self.kwargs}
         agent_name = params.pop("agent_name", None)
 
-        return GeminiLlmClient(
+        return GROQLlmClient(
             api_key=self.api_key,
             model=model,
             agent_name=agent_name,
@@ -514,7 +501,7 @@ class LLMClient:
         """Get default model for provider"""
         defaults = {
             LLMProvider.NVIDIA: "meta/llama-3.1-8b-instruct",
-            LLMProvider.GEMINI: "gemini-1.5-flash",
+            LLMProvider.GROQ: "llama-3.3-70b-versatile",
         }
         return defaults.get(self.provider, "unknown")
     
@@ -522,14 +509,13 @@ class LLMClient:
         """Get API key from settings based on provider"""
         if self.provider == LLMProvider.NVIDIA:
             return settings.nvidia_api_key
-        if self.provider == LLMProvider.GEMINI:
+        if self.provider == LLMProvider.GROQ:
             return (
-                settings.gemini_api_key
-                or settings.google_api_key
-                or settings.gemini_logic_api_key
-                or settings.gemini_readability_api_key
-                or settings.gemini_performance_api_key
-                or settings.gemini_security_api_key
+                getattr(settings, "GROQ_api_key", "")
+                or getattr(settings, "GROQ_logic_api_key", "")
+                or getattr(settings, "GROQ_readability_api_key", "")
+                or getattr(settings, "GROQ_performance_api_key", "")
+                or getattr(settings, "GROQ_security_api_key", "")
             )
         return None
 
@@ -570,10 +556,10 @@ class LLMClientFactory:
         )
 
     @staticmethod
-    def create_gemini_client(model: str = "gemini-1.5-flash", **kwargs) -> LLMClient:
-        """Create Google Gemini client with specific model."""
+    def create_GROQ_client(model: str = "llama-3.3-70b-versatile", **kwargs) -> LLMClient:
+        """Create Groq client with specific model."""
         return LLMClient(
-            provider=LLMProvider.GEMINI,
+            provider=LLMProvider.GROQ,
             model=model,
             **kwargs
         )
@@ -581,17 +567,16 @@ class LLMClientFactory:
     @staticmethod
     def create_default_client() -> LLMClient:
         """Create default client based on available API keys"""
-        has_gemini_key = any([
-            settings.gemini_api_key,
-            settings.google_api_key,
-            settings.gemini_logic_api_key,
-            settings.gemini_readability_api_key,
-            settings.gemini_performance_api_key,
-            settings.gemini_security_api_key,
+        has_GROQ_key = any([
+            getattr(settings, "GROQ_api_key", ""),
+            getattr(settings, "GROQ_logic_api_key", ""),
+            getattr(settings, "GROQ_readability_api_key", ""),
+            getattr(settings, "GROQ_performance_api_key", ""),
+            getattr(settings, "GROQ_security_api_key", ""),
         ])
 
-        if settings.llm_provider == "gemini" and has_gemini_key:
-            return LLMClientFactory.create_gemini_client(model=settings.llm_model)
+        if settings.llm_provider.lower() == "groq" and has_GROQ_key:
+            return LLMClientFactory.create_GROQ_client(model=settings.llm_model)
 
         # Try NVIDIA NIM
         if settings.nvidia_api_key:
@@ -599,7 +584,7 @@ class LLMClientFactory:
         
         # No API keys available
         raise LLMClientError(
-            "No LLM API keys found. Set GEMINI_API_KEY or NVIDIA_API_KEY environment variable."
+            "No LLM API keys found. Set GROQ_API_KEY or NVIDIA_API_KEY environment variable."
         )
 
 

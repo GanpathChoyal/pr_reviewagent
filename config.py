@@ -8,15 +8,15 @@ def _env_bool(name: str, default: str = "false") -> bool:
 class Settings:
     github_token = os.getenv("GITHUB_TOKEN", "")
 
-    llm_provider = os.getenv("LLM_PROVIDER", "gemini")
-    llm_model = os.getenv("LLM_MODEL", "gemini-1.5-flash")
+    llm_provider = os.getenv("LLM_PROVIDER", "GROQ")
+    llm_model = os.getenv("LLM_MODEL", "GROQ-4")
 
-    google_api_key = os.getenv("GOOGLE_API_KEY", "")
-    gemini_api_key = os.getenv("GEMINI_API_KEY", google_api_key)
-    gemini_logic_api_key = os.getenv("GEMINI_LOGIC_API_KEY", gemini_api_key)
-    gemini_readability_api_key = os.getenv("GEMINI_READABILITY_API_KEY", gemini_api_key)
-    gemini_performance_api_key = os.getenv("GEMINI_PERFORMANCE_API_KEY", gemini_api_key)
-    gemini_security_api_key = os.getenv("GEMINI_SECURITY_API_KEY", gemini_api_key)
+    xai_api_key = os.getenv("XAI_API_KEY", "")
+    GROQ_api_key = os.getenv("GROQ_API_KEY", xai_api_key)
+    GROQ_logic_api_key = os.getenv("GROQ_LOGIC_API_KEY", GROQ_api_key)
+    GROQ_readability_api_key = os.getenv("GROQ_READABILITY_API_KEY", GROQ_api_key)
+    GROQ_performance_api_key = os.getenv("GROQ_PERFORMANCE_API_KEY", GROQ_api_key)
+    GROQ_security_api_key = os.getenv("GROQ_SECURITY_API_KEY", GROQ_api_key)
 
     nvidia_api_key = os.getenv("NVIDIA_API_KEY", "")
 

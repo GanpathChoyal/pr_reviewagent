@@ -3,7 +3,9 @@ Review Orchestrator for coordinating multi-agent code review workflow
 """
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional
+import operator
+from typing import List, Dict, Any, Optional, TypedDict
+from typing_extensions import Annotated
 from datetime import datetime
 
 from langgraph.graph import StateGraph, START, END
@@ -27,14 +29,9 @@ from models import (
 logger = logging.getLogger(__name__)
 
 
-class ReviewState(Dict[str, Any]):
-    """State for the review workflow"""
-    pass
-
-
 class AgentResult:
     """Result from an individual analyzer agent"""
-    
+
     def __init__(
         self,
         agent_name: str,
@@ -48,6 +45,22 @@ class AgentResult:
         self.success = success
         self.error = error
         self.execution_time = execution_time
+
+
+class ReviewState(TypedDict, total=False):
+    """State for the review workflow.
+
+    Declared as a TypedDict so LangGraph can introspect the schema and
+    track each field as its own channel. `agent_results` uses the
+    `operator.add` reducer because multiple agent nodes write to it
+    concurrently (fan-out from START) — without a reducer, LangGraph
+    only keeps the last writer's value instead of merging all of them.
+    """
+    context: ReviewContext
+    agent_results: Annotated[List[AgentResult], operator.add]
+    findings: List[Finding]
+    aggregation_complete: bool
+    aggregation_error: str
 
 
 class ReviewOrchestrator:
@@ -77,51 +90,42 @@ class ReviewOrchestrator:
         
         logger.info(f"ReviewOrchestrator initialized with {len(self.agents)} agents")
     
+    def _llm_for_agent(self, agent_name: str) -> BaseLanguageModel:
+        """Get an LLM client scoped to a specific agent.
+
+        If the underlying client supports per-agent key/model routing
+        (e.g. GROQLlmClient.for_agent), use it so each analyzer gets its
+        own API key and model. Otherwise fall back to the single shared
+        client passed into the orchestrator.
+        """
+        if hasattr(self.llm, "for_agent"):
+            return self.llm.for_agent(agent_name)
+        return self.llm
+
     def _initialize_agents(self) -> Dict[str, Any]:
         """Initialize all analyzer agents"""
         agents = {}
         
         # Check which categories are enabled
-        enabled_categories = [
-            category.value if hasattr(category, "value") else category
-            for category in self.config.enabled_categories
-        ]
+        enabled_categories = self.config.enabled_categories
         
         if AnalysisCategory.LOGIC.value in enabled_categories:
-            agents["logic_analyzer"] = LogicAnalyzerAgent(
-                self._llm_for_agent("logic_analyzer"),
-                self.agent_config
-            )
+            agents["logic_analyzer"] = LogicAnalyzerAgent(self._llm_for_agent("logic_analyzer"), self.agent_config)
             logger.debug("Logic Analyzer initialized")
         
         if AnalysisCategory.READABILITY.value in enabled_categories:
-            agents["readability_analyzer"] = ReadabilityAnalyzerAgent(
-                self._llm_for_agent("readability_analyzer"),
-                self.agent_config
-            )
+            agents["readability_analyzer"] = ReadabilityAnalyzerAgent(self._llm_for_agent("readability_analyzer"), self.agent_config)
             logger.debug("Readability Analyzer initialized")
         
         if AnalysisCategory.PERFORMANCE.value in enabled_categories:
-            agents["performance_analyzer"] = PerformanceAnalyzerAgent(
-                self._llm_for_agent("performance_analyzer"),
-                self.agent_config
-            )
+            agents["performance_analyzer"] = PerformanceAnalyzerAgent(self._llm_for_agent("performance_analyzer"), self.agent_config)
             logger.debug("Performance Analyzer initialized")
         
         if AnalysisCategory.SECURITY.value in enabled_categories:
-            agents["security_analyzer"] = SecurityAnalyzerAgent(
-                self._llm_for_agent("security_analyzer"),
-                self.agent_config
-            )
+            agents["security_analyzer"] = SecurityAnalyzerAgent(self._llm_for_agent("security_analyzer"), self.agent_config)
             logger.debug("Security Analyzer initialized")
         
         return agents
-
-    def _llm_for_agent(self, agent_name: str) -> Any:
-        """Return an agent-specific LLM client when the provider supports it."""
-        if hasattr(self.llm, "for_agent"):
-            return self.llm.for_agent(agent_name)
-        return self.llm
     
     def _build_workflow(self) -> StateGraph:
         """Build LangGraph workflow for multi-agent orchestration"""
@@ -149,8 +153,15 @@ class ReviewOrchestrator:
     
     def _create_agent_node(self, agent_name: str):
         """Create a node function for an agent"""
-        async def agent_node(state: ReviewState) -> ReviewState:
-            """Execute agent analysis"""
+        async def agent_node(state: ReviewState) -> Dict[str, Any]:
+            """Execute agent analysis.
+
+            Returns only the *delta* for agent_results (a single-element
+            list). LangGraph merges this into the shared state using the
+            operator.add reducer declared on ReviewState, so concurrent
+            writes from all agent nodes are combined instead of one
+            overwriting another.
+            """
             try:
                 agent = self.agents[agent_name]
                 context = state["context"]
@@ -166,17 +177,12 @@ class ReviewOrchestrator:
                 
                 execution_time = (datetime.now() - start_time).total_seconds()
                 
-                # Store result in state
-                if "agent_results" not in state:
-                    state["agent_results"] = []
-                
                 result = AgentResult(
                     agent_name=agent_name,
                     findings=findings,
                     success=True,
                     execution_time=execution_time
                 )
-                state["agent_results"].append(result)
                 
                 logger.info(
                     f"{agent_name} completed: {len(findings)} findings in {execution_time:.2f}s"
@@ -184,8 +190,6 @@ class ReviewOrchestrator:
                 
             except asyncio.TimeoutError:
                 logger.error(f"{agent_name} timed out after {self.agent_config.timeout}s")
-                if "agent_results" not in state:
-                    state["agent_results"] = []
                 
                 result = AgentResult(
                     agent_name=agent_name,
@@ -193,12 +197,9 @@ class ReviewOrchestrator:
                     success=False,
                     error=f"Timeout after {self.agent_config.timeout}s"
                 )
-                state["agent_results"].append(result)
                 
             except Exception as e:
                 logger.error(f"{agent_name} failed: {e}", exc_info=True)
-                if "agent_results" not in state:
-                    state["agent_results"] = []
                 
                 result = AgentResult(
                     agent_name=agent_name,
@@ -206,13 +207,12 @@ class ReviewOrchestrator:
                     success=False,
                     error=str(e)
                 )
-                state["agent_results"].append(result)
             
-            return state
+            return {"agent_results": [result]}
         
         return agent_node
     
-    def _aggregator_node(self, state: ReviewState) -> ReviewState:
+    def _aggregator_node(self, state: ReviewState) -> Dict[str, Any]:
         """Aggregate findings from all agents"""
         try:
             agent_results = state.get("agent_results", [])
@@ -222,9 +222,6 @@ class ReviewOrchestrator:
             
             # Apply severity threshold filtering
             filtered_findings = self._apply_severity_filter(all_findings)
-            
-            state["findings"] = filtered_findings
-            state["aggregation_complete"] = True
             
             # Log summary
             successful_agents = sum(1 for r in agent_results if r.success)
@@ -240,13 +237,18 @@ class ReviewOrchestrator:
                 if not result.success:
                     logger.warning(f"Agent {result.agent_name} failed: {result.error}")
             
+            return {
+                "findings": filtered_findings,
+                "aggregation_complete": True
+            }
+            
         except Exception as e:
             logger.error(f"Aggregation failed: {e}", exc_info=True)
-            state["findings"] = []
-            state["aggregation_complete"] = False
-            state["aggregation_error"] = str(e)
-        
-        return state
+            return {
+                "findings": [],
+                "aggregation_complete": False,
+                "aggregation_error": str(e)
+            }
     
     async def orchestrate_review(
         self,
@@ -271,26 +273,20 @@ class ReviewOrchestrator:
                 pr_metadata=pr_metadata
             )
             
+            # Initialize state
+            initial_state: ReviewState = {
+                "context": context,
+                "agent_results": [],
+                "findings": []
+            }
+            
             logger.info(f"Starting review orchestration with {len(self.agents)} agents")
-
-            agent_results = await self.execute_agents_concurrently(
-                list(self.agents.values()),
-                context
-            )
-            findings = self.aggregate_findings(agent_results)
-            findings = self._apply_severity_filter(findings)
-
-            successful_agents = sum(1 for result in agent_results if result.success)
-            failed_agents = len(agent_results) - successful_agents
-            logger.info(
-                "Review agents complete: %s succeeded, %s failed",
-                successful_agents,
-                failed_agents,
-            )
-
-            for result in agent_results:
-                if not result.success:
-                    logger.warning("Agent %s failed: %s", result.agent_name, result.error)
+            
+            # Execute workflow
+            final_state = await self.workflow.ainvoke(initial_state)
+            
+            # Extract findings
+            findings = final_state.get("findings", [])
             
             logger.info(f"Review orchestration complete: {len(findings)} total findings")
             
@@ -425,12 +421,10 @@ class ReviewOrchestrator:
             "critical": 4
         }
         
-        threshold = (
-            self.config.severity_threshold.value
-            if hasattr(self.config.severity_threshold, "value")
-            else self.config.severity_threshold
+        threshold_value = severity_order.get(
+            self.config.severity_threshold.lower(),
+            1
         )
-        threshold_value = severity_order.get(str(threshold).lower(), 1)
         
         # Filter findings
         filtered = [

@@ -15,7 +15,7 @@ from agents import (
     SecurityAnalyzerAgent,
     AgentConfig
 )
-from services.llm_client import GeminiLlmClient, NimLlmClient
+from services.llm_client import GROQLlmClient, NimLlmClient
 from config import settings
 from models import (
     ReviewContext,
@@ -63,34 +63,34 @@ class SimpleOrchestrator:
         ]
         
         # Create agent-specific LLM clients if using NVIDIA NIM
-        if isinstance(self.llm, GeminiLlmClient):
+        if isinstance(self.llm, GROQLlmClient):
             if AnalysisCategory.LOGIC.value in enabled_categories:
                 agents["logic_analyzer"] = LogicAnalyzerAgent(
                     self.llm.for_agent("logic_analyzer"),
                     self.agent_config
                 )
-                logger.debug("Logic Analyzer initialized with Gemini")
+                logger.debug("Logic Analyzer initialized with GROQ")
             
             if AnalysisCategory.READABILITY.value in enabled_categories:
                 agents["readability_analyzer"] = ReadabilityAnalyzerAgent(
                     self.llm.for_agent("readability_analyzer"),
                     self.agent_config
                 )
-                logger.debug("Readability Analyzer initialized with Gemini")
+                logger.debug("Readability Analyzer initialized with GROQ")
             
             if AnalysisCategory.PERFORMANCE.value in enabled_categories:
                 agents["performance_analyzer"] = PerformanceAnalyzerAgent(
                     self.llm.for_agent("performance_analyzer"),
                     self.agent_config
                 )
-                logger.debug("Performance Analyzer initialized with Gemini")
+                logger.debug("Performance Analyzer initialized with GROQ")
             
             if AnalysisCategory.SECURITY.value in enabled_categories:
                 agents["security_analyzer"] = SecurityAnalyzerAgent(
                     self.llm.for_agent("security_analyzer"),
                     self.agent_config
                 )
-                logger.debug("Security Analyzer initialized with Gemini")
+                logger.debug("Security Analyzer initialized with GROQ")
         elif isinstance(self.llm, NimLlmClient):
             # Each agent gets its own LLM client with the appropriate model
             if AnalysisCategory.LOGIC.value in enabled_categories:
