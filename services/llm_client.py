@@ -164,7 +164,7 @@ class GROQLlmClient:
     NOT xAI's Grok (api.x.ai) — different company, similar name.
     """
 
-   AGENT_MODELS = {
+    AGENT_MODELS = {
     "logic_analyzer": "openai/gpt-oss-120b",
     "readability_analyzer": "openai/gpt-oss-120b",
     "performance_analyzer": "openai/gpt-oss-120b",
