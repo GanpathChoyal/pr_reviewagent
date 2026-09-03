@@ -164,13 +164,13 @@ class GROQLlmClient:
     NOT xAI's Grok (api.x.ai) — different company, similar name.
     """
 
-    AGENT_MODELS = {
-        "logic_analyzer": "llama-3.3-70b-versatile",
-        "readability_analyzer": "llama-3.3-70b-versatile",
-        "performance_analyzer": "llama-3.3-70b-versatile",
-        "security_analyzer": "llama-3.3-70b-versatile",  # bump to a stronger model here if needed
-        "default": "llama-3.3-70b-versatile",
-    }
+   AGENT_MODELS = {
+    "logic_analyzer": "openai/gpt-oss-120b",
+    "readability_analyzer": "openai/gpt-oss-120b",
+    "performance_analyzer": "openai/gpt-oss-120b",
+    "security_analyzer": "openai/gpt-oss-120b",
+    "default": "openai/gpt-oss-120b",
+}
 
     AGENT_KEY_SETTINGS = {
         "logic_analyzer": "GROQ_logic_api_key",
