@@ -31,12 +31,12 @@ class NimLlmClient:
     
     # Model mapping for different analyzers
     AGENT_MODELS = {
-        "logic_analyzer": "meta/llama-3.1-70b-instruct",
-        "readability_analyzer": "meta/llama-3.1-70b-instruct",
-        "performance_analyzer": "meta/llama-3.1-70b-instruct",
-        "security_analyzer": "meta/llama-3.1-405b-instruct",  # Strongest model for security
-        "default": "meta/llama-3.1-8b-instruct"  # Fallback
-    }
+    "logic_analyzer": "openai/gpt-oss-120b",
+    "readability_analyzer": "openai/gpt-oss-120b",
+    "performance_analyzer": "openai/gpt-oss-120b",
+    "security_analyzer": "openai/gpt-oss-120b",
+    "default": "openai/gpt-oss-120b",
+}
     
     def __init__(
         self,
